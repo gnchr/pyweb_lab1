@@ -1,0 +1,13 @@
+/* Local styles: no fonts or assets from a CDN. */
+:root { --md-primary-fg-color: #173b53; --md-accent-fg-color: #007e80; }
+.md-header { box-shadow: none; }
+.md-typeset h1 { color: var(--md-default-fg-color); font-weight: 750; letter-spacing: -.035em; }
+.hero { padding: 2rem; margin-bottom: 2rem; border: 1px solid #bacfd4; border-radius: 1rem; background: linear-gradient(120deg, #eaf5f3, #edf2fb); color: #183647; }
+.hero h2 { font-size: 2rem; font-weight: 750; margin-top: .5rem; line-height: 1.2; }
+.eyebrow { font-size: .65rem; font-weight: 700; letter-spacing: .12em; color: #236468; }
+.md-typeset .hero .md-button { margin: .4rem .4rem .2rem 0; border-radius: .4rem; }
+.md-typeset .grid.cards > ul > li { border-radius: .75rem; padding: 1.25rem; }
+.formula { overflow-x: auto; padding: 1.5rem; border: 1px solid var(--md-default-fg-color--lightest); border-radius: .75rem; font-size: 1.3rem; }
+[data-md-color-scheme="slate"] .hero { background: linear-gradient(120deg, #173b40, #203149); border-color: #385966; color: #e6f1f4; }
+[data-md-color-scheme="slate"] .eyebrow { color: #8bd9d0; }
+@media (max-width: 600px) { .hero { padding: 1.2rem; } .hero h2 { font-size: 1.5rem; } }

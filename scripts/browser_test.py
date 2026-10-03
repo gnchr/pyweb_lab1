@@ -68,18 +68,28 @@ def check_browser(url: str, query: str, channel: str | None, blocked_worker: boo
             response = page.goto(url, wait_until="networkidle")
             if response is None or response.status != 200:
                 raise RuntimeError(f"Страница недоступна: {url}")
-            expect(page.locator("h1")).to_contain_text("Публикация результатов исследований")
+            expect(page.locator("h1")).to_contain_text("Веб-программирование")
             search_input = page.locator("[data-md-component='search-query']")
             search_input.click()
             # Material слушает keyup: fill() отправляет только событие input.
             search_input.press_sequentially(query)
             result = page.locator(".md-search-result__link").first
             expect(result).to_be_visible(timeout=15000)
-            expect(result).to_contain_text("Публикация результатов исследований")
+            expect(result).to_contain_text("Веб-программирование")
             href = result.get_attribute("href") or ""
             resolved = urlsplit(page.evaluate("href => new URL(href, location.href).href", href))
             if resolved.netloc != origin.netloc or not resolved.path.startswith(origin.path):
                 raise RuntimeError(f"Результат поиска выходит из подкаталога: {href}")
+            page.goto(url + "http/", wait_until="networkidle")
+            formula = page.locator("math")
+            expect(formula).to_be_visible()
+            if not formula.evaluate("element => element.namespaceURI === 'http://www.w3.org/1998/Math/MathML'"):
+                raise RuntimeError("Формула не распознана как MathML")
+            expect(page.locator(".formula mfrac")).to_be_visible()
+            page.set_viewport_size({"width": 360, "height": 800})
+            page.goto(url, wait_until="networkidle")
+            if page.evaluate("document.documentElement.scrollWidth > window.innerWidth"):
+                raise RuntimeError("Горизонтальная прокрутка на мобильном экране")
             if failures:
                 raise RuntimeError("Ошибки JavaScript: " + "; ".join(failures))
         except AssertionError as error:

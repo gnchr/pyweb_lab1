@@ -1,5 +1,5 @@
-site_name: Публикация результатов исследований
-site_description: Учебный проект по генераторам статических сайтов на Python
+site_name: Веб-программирование
+site_description: Учебный справочник по HTML, CSS, JavaScript, HTTP и Python
 site_url: !ENV [SITE_URL, "http://127.0.0.1:8000/"]
 repo_url: https://github.com/gnchr/pyweb_lab1
 repo_name: gnchr/pyweb_lab1
@@ -24,9 +24,19 @@ theme:
   name: material
   language: ru
   font: false
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Переключить на тёмную тему
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Переключить на светлую тему
   features:
     - navigation.instant
     - navigation.tracking
+    - navigation.footer
     - content.code.copy
 
 plugins:
@@ -47,8 +57,16 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.superfences
 
+extra_css:
+  - stylesheets/extra.css
+
 nav:
   - Главная: index.md
+  - HTML и CSS: frontend.md
+  - JavaScript: javascript.md
+  - HTTP: http.md
+  - Python на сервере: python.md
+  - Практикум: practice.md
 
 copyright: >-
   Код — MIT; содержимое сайта — CC BY 4.0
