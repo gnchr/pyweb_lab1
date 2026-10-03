@@ -1,4 +1,4 @@
-# Тестирование отката
+# Веб-программирование
 
 <div class="hero" markdown>
 <span class="eyebrow">ОТ ПЕРВОЙ СТРАНИЦЫ ДО HTTP-СЕРВЕРА</span>
