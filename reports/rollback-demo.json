@@ -1,0 +1,58 @@
+{
+  "scope": "local filesystem + HTTP; not live Helios or GitHub Pages",
+  "date_utc": "2026-10-03T19:55:53.867419+00:00",
+  "events": [
+    {
+      "step": "publish-demo-v1",
+      "outcome": "passed",
+      "seconds": 1.555541,
+      "http_status": 200,
+      "release": "demo-v1"
+    },
+    {
+      "step": "publish-demo-v2",
+      "outcome": "passed",
+      "seconds": 2.397989,
+      "http_status": 200,
+      "release": "demo-v2"
+    },
+    {
+      "step": "rollback-v2-to-v1",
+      "outcome": "passed",
+      "seconds": 2.011933,
+      "http_status": 200,
+      "release": "demo-v1",
+      "preview_preserved": true
+    },
+    {
+      "step": "failed-healthcheck-and-rollback",
+      "outcome": "passed",
+      "seconds": 13.16494,
+      "expected_failure": "Не удалось получить http://127.0.0.1:52548/pyweb_lab1/assets/javascripts/bundle.d7400e89.min.js: HTTP Error 404: File not found",
+      "restored_release": "demo-v1"
+    },
+    {
+      "step": "interrupted-upload-keeps-public-site",
+      "outcome": "passed",
+      "seconds": 0.502354,
+      "release": "demo-v1",
+      "http_status": 200
+    },
+    {
+      "step": "recover-after-old-moved",
+      "outcome": "passed",
+      "seconds": 2.234055,
+      "interrupted_http_status": 404,
+      "recovered_http_status": 200,
+      "release": "demo-v1"
+    },
+    {
+      "step": "recover-after-new-moved",
+      "outcome": "passed",
+      "seconds": 2.421911,
+      "interrupted_http_status": 200,
+      "recovered_http_status": 200,
+      "release": "demo-v1"
+    }
+  ]
+}

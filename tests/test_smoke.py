@@ -57,6 +57,23 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(fetch('https://example.org/', expected_marker=MARKER), HTML)
             self.assertEqual(request.call_count, 2)
 
+    def test_http_200_with_previous_release_marker_still_fails(self):
+        with patch('scripts.smoke_test.urlopen') as request, patch('scripts.smoke_test.time.sleep'):
+            response = request.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = HTML.encode('utf-8')
+            with self.assertRaises(RuntimeError):
+                fetch('https://example.org/', attempts=2, expected_marker='PYWEB_LAB1_RELEASE:new')
+            self.assertEqual(request.call_count, 2)
+
+    def test_non_200_with_correct_marker_fails(self):
+        with patch('scripts.smoke_test.urlopen') as request:
+            response = request.return_value.__enter__.return_value
+            response.status = 503
+            response.read.return_value = HTML.encode('utf-8')
+            with self.assertRaisesRegex(RuntimeError, '503'):
+                fetch('https://example.org/', attempts=1, expected_marker=MARKER)
+
 
 if __name__ == '__main__':
     unittest.main()

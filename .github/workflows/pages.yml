@@ -19,6 +19,9 @@ jobs:
     permissions:
       contents: read
       pages: read
+    outputs:
+      marker: ${{ steps.release.outputs.marker }}
+      delivery_started: ${{ steps.measurement.outputs.delivery_started }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -32,6 +35,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --requirement requirements.txt
 
+      - name: Run regression tests before deployment
+        run: python -m unittest discover -s tests -v
+
       - name: Configure GitHub Pages
         id: pages
         uses: actions/configure-pages@v5
@@ -43,6 +49,18 @@ jobs:
 
       - name: Check generated site
         run: python scripts/smoke_test.py --directory site
+
+      - name: Stamp release
+        id: release
+        env:
+          RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python scripts/stamp_release.py --release "$RELEASE_ID"
+          echo "marker=PYWEB_LAB1_RELEASE:$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Start delivery measurement before artifact transfer
+        id: measurement
+        run: python scripts/deployment_metrics.py start --file _build/pages-delivery.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -68,12 +86,33 @@ jobs:
         with:
           python-version-file: .python-version
 
+      - name: Start delivery measurement
+        env:
+          DELIVERY_STARTED: ${{ needs.build.outputs.delivery_started }}
+        run: python scripts/deployment_metrics.py start --file _build/pages-delivery.json --started-at "$DELIVERY_STARTED"
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
       - name: Check published site
+        id: health
         env:
           DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}
-        run: python scripts/smoke_test.py --url "$DEPLOYED_URL"
+          EXPECTED_MARKER: ${{ needs.build.outputs.marker }}
+        run: python scripts/smoke_test.py --url "$DEPLOYED_URL" --expected-marker "$EXPECTED_MARKER" --metrics-file _build/pages-health.json
+
+      - name: Finish delivery measurement
+        if: always()
+        env:
+          DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}
+          OUTCOME: ${{ steps.deployment.outcome }}/${{ steps.health.outcome }}
+        run: python scripts/deployment_metrics.py finish --file _build/pages-delivery.json --url "$DEPLOYED_URL" --outcome "$OUTCOME"
+
+      - name: Save deployment measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-measurements-${{ github.run_id }}-${{ github.run_attempt }}
+          path: _build/pages-*.json
 

@@ -3,20 +3,35 @@ name: Deploy to Helios
 on:
   push:
     branches:
-      - main
+      - '**'
   workflow_dispatch:
+    inputs:
+      action:
+        description: Operation
+        type: choice
+        options:
+          - deploy
+          - rollback
+          - recover
+        default: deploy
+      target_branch:
+        description: Branch to deploy or restore (empty means selected workflow branch)
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: helios-production
-  cancel-in-progress: true
+  group: helios-site
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   deploy:
     if: ${{ github.event_name == 'workflow_dispatch' || vars.HELIOS_ENABLED == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: helios
     env:
       HELIOS_HOST: ${{ vars.HELIOS_HOST }}
@@ -26,29 +41,48 @@ jobs:
       HELIOS_USER: ${{ secrets.HELIOS_USER }}
       HELIOS_SSH_KEY: ${{ secrets.HELIOS_SSH_KEY }}
       HELIOS_KNOWN_HOSTS: ${{ secrets.HELIOS_KNOWN_HOSTS }}
+      MAIN_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+      TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
+      OPERATION: ${{ inputs.action || 'deploy' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_branch || github.sha }}
 
-      - name: Set up Python
+      - name: Set up Python on GitHub runner only
         uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
           cache: pip
 
-      - name: Validate deployment configuration
-        run: python scripts/deploy_helios.py --validate-only
+      - name: Configure deployment or preview
+        id: config
+        run: python scripts/deploy_helios.py --action configure --branch "$TARGET_BRANCH"
 
       - name: Install dependencies
+        if: env.OPERATION == 'deploy'
         run: python -m pip install --requirement requirements.txt
 
+      - name: Run regression tests before deployment
+        if: env.OPERATION == 'deploy'
+        run: python -m unittest discover -s tests -v
+
       - name: Build site for Helios
+        if: env.OPERATION == 'deploy'
         env:
-          SITE_URL: ${{ env.HELIOS_SITE_URL }}
+          SITE_URL: ${{ steps.config.outputs.site_url }}
         run: python -m mkdocs build --strict
 
       - name: Check generated site
+        if: env.OPERATION == 'deploy'
         run: python scripts/smoke_test.py --directory site
+
+      - name: Stamp release
+        if: env.OPERATION == 'deploy'
+        env:
+          RELEASE_ID: ${{ steps.config.outputs.release }}
+        run: python scripts/stamp_release.py --release "$RELEASE_ID" --branch "$TARGET_BRANCH"
 
       - name: Configure SSH
         shell: bash
@@ -59,9 +93,47 @@ jobs:
           printf '%s\n' "$HELIOS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy site with rsync
-        run: python scripts/deploy_helios.py
+      - name: Start delivery measurement
+        run: python scripts/deployment_metrics.py start --file _build/helios-delivery.json
+
+      - name: Deploy, rollback or recover
+        id: publish
+        env:
+          RELEASE_ID: ${{ steps.config.outputs.release }}
+        run: python scripts/deploy_helios.py --action "$OPERATION" --branch "$TARGET_BRANCH" --metrics-file _build/helios-publish.json
 
       - name: Check published site
-        run: python scripts/smoke_test.py --url "$HELIOS_SITE_URL"
+        id: health
+        env:
+          PUBLISHED_URL: ${{ steps.config.outputs.site_url }}
+          EXPECTED_MARKER: ${{ steps.publish.outputs.marker }}
+        run: python scripts/smoke_test.py --url "$PUBLISHED_URL" --expected-marker "$EXPECTED_MARKER" --metrics-file _build/helios-health.json
+
+      - name: Restore previous version after failed healthcheck
+        id: restore
+        if: failure() && steps.health.outcome == 'failure' && steps.publish.outputs.has_previous == 'true'
+        env:
+          FAILED_RELEASE: ${{ steps.publish.outputs.release }}
+        run: python scripts/deploy_helios.py --action rollback --branch "$TARGET_BRANCH" --expect-release "$FAILED_RELEASE"
+
+      - name: Check restored version
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          PUBLISHED_URL: ${{ steps.config.outputs.site_url }}
+          EXPECTED_MARKER: ${{ steps.restore.outputs.marker }}
+        run: python scripts/smoke_test.py --url "$PUBLISHED_URL" --expected-marker "$EXPECTED_MARKER"
+
+      - name: Finish delivery measurement
+        if: always()
+        env:
+          PUBLISHED_URL: ${{ steps.config.outputs.site_url }}
+          OUTCOME: ${{ steps.publish.outcome }}/${{ steps.health.outcome }}
+        run: python scripts/deployment_metrics.py finish --file _build/helios-delivery.json --url "$PUBLISHED_URL" --outcome "$OUTCOME"
+
+      - name: Save deployment measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: helios-measurements-${{ github.run_id }}-${{ github.run_attempt }}
+          path: _build/helios-*.json
 

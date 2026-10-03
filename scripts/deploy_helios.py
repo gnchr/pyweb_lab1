@@ -1,51 +1,33 @@
-"""Проверка параметров Helios и синхронизация только каталога этой работы."""
-
-from __future__ import annotations
+"""SSH/rsync deploy, preview URL и откат Helios."""
 
 import argparse
 from dataclasses import dataclass
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
-
+import uuid
 
 PROJECT = "pyweb_lab1"
 
-# Выполняется на сервере через POSIX sh; Python на Helios не требуется.
-REMOTE_PREPARE = r"""set -eu
-fail() { echo "$1" >&2; exit 1; }
-requested=$1
-account=$2
-test "$(id -un)" = "$account" || fail 'Unexpected remote account'
-home_dir=$(cd "$HOME" && pwd -P)
-case "$home_dir" in
-    "/home/studs/$account"|"/export/home/studs/$account") ;;
-    *) fail 'Unexpected physical home directory' ;;
-esac
-requested_home=${requested%/public_html/pyweb_lab1}
-test "$(cd "$requested_home" && pwd -P)" = "$home_dir" || fail 'Requested home does not match account home'
-public_dir="$home_dir/public_html"
-target="$public_dir/pyweb_lab1"
-test ! -L "$public_dir" || fail 'public_html must not be a symbolic link'
-test ! -L "$target" || fail 'Project directory must not be a symbolic link'
-mkdir -p "$target"
-test "$(cd "$public_dir" && pwd -P)" = "$public_dir" || fail 'Unexpected physical public_html path'
-test "$(cd "$target" && pwd -P)" = "$target" || fail 'Unexpected physical project path'
-chmod 755 "$public_dir" "$target"
-command -v rsync >/dev/null 2>&1 || fail 'rsync is not installed on Helios'
-printf '%s\n' "$target"
-"""
+
+def allowed_paths(user):
+    return {f"/home/studs/{user}/public_html/{PROJECT}", f"/export/home/studs/{user}/public_html/{PROJECT}"}
 
 
-def allowed_paths(user: str) -> set[str]:
-    return {
-        f"/home/studs/{user}/public_html/{PROJECT}",
-        f"/export/home/studs/{user}/public_html/{PROJECT}",
-    }
+def branch_channel(branch, main_branch="main"):
+    if not branch:
+        raise ValueError("Branch name is required")
+    if branch == main_branch:
+        return "main"
+    slug = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")[:40] or "branch"
+    return slug + "-" + hashlib.sha256(branch.encode()).hexdigest()[:12]
 
 
 @dataclass(frozen=True)
@@ -57,79 +39,126 @@ class Config:
     site_url: str
 
     @classmethod
-    def from_environment(cls) -> "Config":
-        fields = ("HELIOS_HOST", "HELIOS_DEPLOY_PATH", "HELIOS_SITE_URL", "HELIOS_USER", "HELIOS_SSH_KEY", "HELIOS_KNOWN_HOSTS")
-        for name in fields:
+    def from_environment(cls):
+        for name in ("HELIOS_HOST", "HELIOS_DEPLOY_PATH", "HELIOS_SITE_URL", "HELIOS_USER", "HELIOS_SSH_KEY", "HELIOS_KNOWN_HOSTS"):
             if not os.environ.get(name):
-                raise ValueError(f"{name} is not set")
-        host = os.environ["HELIOS_HOST"]
-        user = os.environ["HELIOS_USER"]
+                raise ValueError(name + " is not set")
+        host, user = os.environ["HELIOS_HOST"], os.environ["HELIOS_USER"]
         path = os.environ["HELIOS_DEPLOY_PATH"].rstrip("/")
-        site_url = os.environ["HELIOS_SITE_URL"]
+        url = os.environ["HELIOS_SITE_URL"]
         port = int(os.environ.get("HELIOS_PORT") or "2222")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host):
             raise ValueError("Invalid HELIOS_HOST")
         if not re.fullmatch(r"s[0-9]+", user):
-            raise ValueError("HELIOS_USER must be an ITMO student account, e.g. s123456")
+            raise ValueError("Invalid HELIOS_USER")
         if not 1 <= port <= 65535:
-            raise ValueError("HELIOS_PORT must be between 1 and 65535")
+            raise ValueError("Invalid HELIOS_PORT")
         if path not in allowed_paths(user):
             raise ValueError("HELIOS_DEPLOY_PATH must point exactly to this account's public_html/pyweb_lab1 directory")
-        url = urlsplit(site_url)
-        if (url.scheme not in {"http", "https"} or not url.netloc or url.username
-                or url.query or url.fragment or not url.path.endswith(f"/{PROJECT}/")):
-            raise ValueError("HELIOS_SITE_URL must be an HTTP(S) URL ending with /pyweb_lab1/")
-        return cls(host, port, user, path, site_url)
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.query or parsed.fragment or not parsed.path.endswith(f"/{PROJECT}/"):
+            raise ValueError("Invalid HELIOS_SITE_URL")
+        return cls(host, port, user, path, url)
+
+    @property
+    def ssh_options(self):
+        return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-p", str(self.port)]
+
+    def url(self, channel):
+        return self.site_url if channel == "main" else self.site_url + "previews/" + channel + "/"
 
 
-def deploy(config: Config, site: Path) -> None:
-    site = site.resolve()
-    if not (site / "index.html").is_file():
-        raise ValueError("The site directory must contain index.html")
-    ssh_options = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-p", str(config.port)]
-    remote = f"{config.user}@{config.host}"
-    result = subprocess.run(
-        ["ssh", *ssh_options, remote, f"sh -s -- {shlex.quote(config.path)} {shlex.quote(config.user)}"],
-        input=REMOTE_PREPARE, text=True, capture_output=True, check=True,
-    )
-    canonical_path = result.stdout.strip()
-    if canonical_path not in allowed_paths(config.user):
-        raise ValueError("The remote server returned an unexpected deployment path; rsync was not started")
-    parent = canonical_path.rsplit("/", 1)[0]
-    # Повторная проверка прямо в команде принимающего rsync.
-    receiver = (
-        f"test ! -L {shlex.quote(parent)} && test ! -L {shlex.quote(canonical_path)} "
-        f"&& cd -P {shlex.quote(canonical_path)} "
-        f"&& test \"$(pwd -P)\" = {shlex.quote(canonical_path)} && exec rsync"
-    )
-    subprocess.run(
-        ["rsync", "--archive", "--compress", "--delete", "--one-file-system", "--chmod=D755,F644",
-         "--rsync-path", receiver, "-e", shlex.join(["ssh", *ssh_options]),
-         site.as_posix().rstrip("/") + "/", f"{remote}:{canonical_path}/"],
-        check=True,
-    )
-    print("Helios deployment completed")
+def remote_action(config, action, channel, release=""):
+    source = "\n".join(Path(__file__).with_name(name).read_text(encoding="utf-8") for name in ("helios_release.sh", "helios_remote.sh"))
+    command = shlex.join(["sh", "-s", "--", action, config.path, config.user, channel, release, uuid.uuid4().hex])
+    response = subprocess.run(["ssh", *config.ssh_options, f"{config.user}@{config.host}", command], input=source, text=True, capture_output=True, check=True)
+    return parse_remote_output(response.stdout)
 
 
-def main() -> int:
+def parse_remote_output(output):
+    result = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in {"stage", "root", "release", "marker", "has_previous"} or key in result:
+            raise ValueError("Unexpected remote response")
+        if key == "has_previous" and value not in {"true", "false"}:
+            raise ValueError("Invalid remote boolean")
+        result[key] = value == "true" if key == "has_previous" else value
+    if not result:
+        raise ValueError("Empty remote response")
+    return result
+
+
+def deploy(config, site, channel="main", release=None):
+    release = release or uuid.uuid4().hex
+    site = Path(site).resolve()
+    info = json.loads((site / "deployment.json").read_text(encoding="utf-8"))
+    if info["release"] != release:
+        raise ValueError("Build release does not match deployment release")
+    started = time.perf_counter()
+    prepared = remote_action(config, "prepare", channel, release)
+    stage = prepared["stage"]
+    expected_stages = {p.removesuffix("/public_html/" + PROJECT) + "/.pyweb_lab1-deploy/staging/" + release for p in allowed_paths(config.user)}
+    if stage not in expected_stages:
+        raise ValueError("Unexpected remote staging path; rsync was not started")
+    receiver_script = f'test ! -L {shlex.quote(stage)} && cd -P {shlex.quote(stage)} && test "$(pwd -P)" = {shlex.quote(stage)} && exec rsync "$@"'
+    receiver = shlex.join(["sh", "-c", receiver_script, "rsync"])
+    subprocess.run(["rsync", "--archive", "--compress", "--one-file-system", "--chmod=D755,F644", "--rsync-path", receiver, "-e", shlex.join(["ssh", *config.ssh_options]), site.as_posix().rstrip("/") + "/", f"{config.user}@{config.host}:{stage}/"], check=True)
+    uploaded = time.perf_counter()
+    result = remote_action(config, "activate", channel, release)
+    result["upload_seconds"] = round(uploaded - started, 6)
+    result["activate_seconds"] = round(time.perf_counter() - uploaded, 6)
+    return result
+
+
+def outputs(values):
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+            for key, value in values.items():
+                if isinstance(value, (str, bool, int, float)):
+                    stream.write(f"{key}={str(value).lower() if isinstance(value, bool) else value}\n")
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--action", choices=("configure", "deploy", "rollback", "recover"), default="deploy")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--branch", default=os.environ.get("GITHUB_REF_NAME", "main"))
+    parser.add_argument("--main-branch", default=os.environ.get("MAIN_BRANCH", "main"))
+    parser.add_argument("--release", default=os.environ.get("RELEASE_ID") or uuid.uuid4().hex)
+    parser.add_argument("--expect-release", default="")
     parser.add_argument("--site-dir", type=Path, default=Path("site"))
+    parser.add_argument("--metrics-file", type=Path)
     args = parser.parse_args()
     try:
+        try:
+            from .helios_release import identifier
+        except ImportError:
+            from helios_release import identifier
         config = Config.from_environment()
-        if args.validate_only:
-            print("Helios configuration validated")
+        channel = branch_channel(args.branch, args.main_branch)
+        identifier(args.release)
+        result = {"channel": channel, "site_url": config.url(channel), "release": args.release}
+        if args.validate_only or args.action == "configure":
+            pass
+        elif args.action == "deploy":
+            result.update(deploy(config, args.site_dir, channel, args.release))
+        elif args.action == "rollback":
+            result.update(remote_action(config, "rollback", channel, args.expect_release))
         else:
-            deploy(config, args.site_dir)
+            result.update(remote_action(config, "recover", channel))
+        outputs(result)
+        if args.metrics_file:
+            args.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            args.metrics_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(json.dumps(result, ensure_ascii=False))
     except subprocess.CalledProcessError as error:
-        # Не печатаем переменные окружения и SSH-ключи.
-        print(f"HELIOS DEPLOY FAILED: command exited with {error.returncode}", file=sys.stderr)
+        print(f"HELIOS FAILED: command exited with {error.returncode}", file=sys.stderr)
         if error.stderr:
             print(error.stderr.strip(), file=sys.stderr)
         return 1
-    except (OSError, ValueError) as error:
-        print(f"HELIOS DEPLOY FAILED: {error}", file=sys.stderr)
+    except (OSError, ValueError, KeyError) as error:
+        print("HELIOS FAILED: " + str(error), file=sys.stderr)
         return 1
     return 0
 
