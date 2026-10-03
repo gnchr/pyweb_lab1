@@ -1,9 +1,17 @@
 name: Deploy to Helios
 
 on:
-  push:
-    branches:
-      - '**'
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      target_branch:
+        type: string
+        required: true
+      action:
+        type: string
+        default: deploy
   workflow_dispatch:
     inputs:
       action:
@@ -28,11 +36,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve manual target
+    if: ${{ !inputs.ref }}
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.target.outputs.ref }}
+    steps:
+      - name: Resolve branch to immutable commit
+        id: target
+        uses: actions/github-script@v9
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
+        with:
+          script: |
+            const branch = await github.rest.repos.getBranch({
+              ...context.repo, branch: process.env.TARGET_BRANCH
+            });
+            core.setOutput('ref', branch.data.commit.sha);
+
+  build:
+    name: CI
+    if: ${{ !inputs.ref }}
+    needs: resolve
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.HELIOS_ENABLED == 'true' }}
+    needs: [resolve, build]
+    # Automatic calls have already passed the caller's CI / build.
+    # Manual operations run the same CI against the resolved target SHA first.
+    if: ${{ !cancelled() && (inputs.ref != '' || needs.build.result == 'success') }}
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: helios
+    environment:
+      name: helios
+      url: ${{ steps.config.outputs.site_url }}
     env:
       HELIOS_HOST: ${{ vars.HELIOS_HOST }}
       HELIOS_PORT: ${{ vars.HELIOS_PORT }}
@@ -45,16 +89,40 @@ jobs:
       TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
       OPERATION: ${{ inputs.action || 'deploy' }}
     steps:
+      - name: Require automatic deployment to be enabled
+        if: inputs.ref != ''
+        env:
+          HELIOS_ENABLED: ${{ vars.HELIOS_ENABLED }}
+        run: |
+          if [ "$HELIOS_ENABLED" != "true" ]; then
+            echo '::error::HELIOS_ENABLED must be true for the required Helios check.'
+            exit 1
+          fi
+
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.target_branch || github.sha }}
+          ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
 
       - name: Set up Python on GitHub runner only
         uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
           cache: pip
+
+      - name: Reject a superseded branch commit
+        uses: actions/github-script@v9
+        env:
+          EXPECTED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+        with:
+          script: |
+            const branch = await github.rest.repos.getBranch({
+              ...context.repo, branch: process.env.TARGET_BRANCH
+            });
+            if (branch.data.commit.sha !== process.env.EXPECTED_SHA) {
+              core.setFailed('Branch advanced while CI was running; refusing to publish an outdated commit.');
+            }
 
       - name: Configure deployment or preview
         id: config
@@ -63,10 +131,6 @@ jobs:
       - name: Install dependencies
         if: env.OPERATION == 'deploy'
         run: python -m pip install --requirement requirements.txt
-
-      - name: Run regression tests before deployment
-        if: env.OPERATION == 'deploy'
-        run: python -m unittest discover -s tests -v
 
       - name: Build site for Helios
         if: env.OPERATION == 'deploy'
@@ -136,4 +200,15 @@ jobs:
         with:
           name: helios-measurements-${{ github.run_id }}-${{ github.run_attempt }}
           path: _build/helios-*.json
+
+      - name: Show deployment URL in summary and pull request
+        uses: actions/github-script@v9
+        env:
+          PUBLISHED_URL: ${{ steps.config.outputs.site_url }}
+          DEPLOYED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          RELEASE_ID: ${{ steps.publish.outputs.release }}
+        with:
+          script: |
+            const report = require('./scripts/publish_preview.cjs');
+            await report.reportDeployment({github, context, core, env: process.env});
 

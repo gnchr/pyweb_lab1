@@ -1,8 +1,10 @@
 name: CI
 
+# One run per pushed commit. Its checks are visible in the associated PR too.
 on:
   push:
-  pull_request:
+    branches:
+      - '**'
   workflow_dispatch:
 
 permissions:
@@ -10,43 +12,22 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+    name: CI
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      ref: ${{ github.sha }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version-file: .python-version
-          cache: pip
-
-      - name: Install dependencies
-        run: python -m pip install --requirement requirements-dev.txt
-
-      - name: Run regression tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Build site in strict mode
-        env:
-          SITE_URL: http://127.0.0.1:8000/
-        run: python -m mkdocs build --strict
-
-      - name: Check generated site
-        run: python scripts/smoke_test.py --directory site
-
-      - name: Demonstrate rollback and interruption recovery locally
-        run: python scripts/demo_deployment.py --report _build/rollback-demo.json
-
-      - name: Save rollback demonstration
-        uses: actions/upload-artifact@v4
-        with:
-          name: local-rollback-demo
-          path: _build/rollback-demo.json
-
-      - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
-
-      - name: Check search in Pages, Helios and preview layouts
-        run: python scripts/browser_test.py --directory site
+  deploy:
+    name: Deploy to Helios
+    needs: build
+    uses: ./.github/workflows/helios.yml
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    secrets: inherit
+    with:
+      ref: ${{ github.sha }}
+      target_branch: ${{ github.ref_name }}
+      action: deploy
 

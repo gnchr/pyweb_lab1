@@ -1,0 +1,16 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      {"context": "CI / build", "app_id": 15368},
+      {"context": "Deploy to Helios / deploy", "app_id": 15368}
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
