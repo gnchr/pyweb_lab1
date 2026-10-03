@@ -103,7 +103,7 @@ def fetch(url: str, attempts: int = 6, *, expected_marker: str | None = None) ->
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            request = Request(url, headers={"User-Agent": "pyweb-lab1-smoke-test/1.0"})
+            request = Request(url, headers={"User-Agent": "pyweb-lab1-smoke-test/1.0", "Cache-Control": "no-cache"})
             with urlopen(request, timeout=20) as response:
                 require(response.status == 200, f"{url} вернул HTTP {response.status}")
                 content = response.read().decode("utf-8")
@@ -117,11 +117,12 @@ def fetch(url: str, attempts: int = 6, *, expected_marker: str | None = None) ->
     raise RuntimeError(f"Не удалось получить {url}: {last_error}")
 
 
-def check_url(base_url: str) -> None:
+def check_url(base_url: str, expected_marker: str | None = None) -> None:
     base_url = base_url.rstrip("/") + "/"
     parsed_base = urlsplit(base_url)
     require(parsed_base.scheme in {"http", "https"} and bool(parsed_base.netloc), "Нужен HTTP(S) URL сайта")
-    html = fetch(base_url, expected_marker=MARKER)
+    html = fetch(base_url, expected_marker=expected_marker or MARKER)
+    require(MARKER in html, "Отсутствует общая контрольная строка сайта")
 
     assets = parse_assets(html)
     require(assets, "На опубликованной странице не найдены CSS/JavaScript-ресурсы")
@@ -144,16 +145,25 @@ def main() -> int:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--directory", type=Path, help="Каталог результата MkDocs")
     target.add_argument("--url", help="Публичный базовый URL сайта")
+    parser.add_argument("--expected-marker", help="Контрольная строка конкретной версии")
+    parser.add_argument("--metrics-file", type=Path)
     args = parser.parse_args()
 
+    started = time.perf_counter()
+    outcome = "success"
     try:
         if args.directory:
             check_directory(args.directory.resolve())
         else:
-            check_url(args.url)
+            check_url(args.url, args.expected_marker)
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+        outcome = "failure"
         print(f"SMOKE TEST FAILED: {error}", file=sys.stderr)
         return 1
+    finally:
+        if args.metrics_file:
+            args.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            args.metrics_file.write_text(json.dumps({"url": args.url, "marker": args.expected_marker, "outcome": outcome, "healthcheck_seconds": round(time.perf_counter() - started, 6)}, indent=2), encoding="utf-8")
 
     print("SMOKE TEST PASSED")
     return 0

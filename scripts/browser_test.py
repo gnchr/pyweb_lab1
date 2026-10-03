@@ -113,7 +113,7 @@ def main() -> int:
         if args.directory:
             if not (args.directory / "index.html").is_file():
                 raise RuntimeError("Сначала выполните mkdocs build --strict")
-            for prefix in ("/pyweb_lab1/", "/~review/pyweb_lab1/"):
+            for prefix in ("/pyweb_lab1/", "/~review/pyweb_lab1/", "/~review/pyweb_lab1/previews/feature-abc123/"):
                 with local_site(args.directory, prefix) as url:
                     check_browser(url, args.query, args.channel, args.block_search_worker)
                 print(f"BROWSER SEARCH PASSED: {prefix} (external resources blocked)")

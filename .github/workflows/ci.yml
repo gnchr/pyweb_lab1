@@ -35,9 +35,18 @@ jobs:
       - name: Check generated site
         run: python scripts/smoke_test.py --directory site
 
+      - name: Demonstrate rollback and interruption recovery locally
+        run: python scripts/demo_deployment.py --report _build/rollback-demo.json
+
+      - name: Save rollback demonstration
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-rollback-demo
+          path: _build/rollback-demo.json
+
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
 
-      - name: Check search in both subdirectory layouts
+      - name: Check search in Pages, Helios and preview layouts
         run: python scripts/browser_test.py --directory site
 
