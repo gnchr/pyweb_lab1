@@ -1,0 +1,55 @@
+site_name: Публикация результатов исследований
+site_description: Учебный проект по генераторам статических сайтов на Python
+site_url: !ENV [SITE_URL, "http://127.0.0.1:8000/"]
+repo_url: https://github.com/gnchr/pyweb_lab1
+repo_name: gnchr/pyweb_lab1
+edit_uri: ""
+
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+theme:
+  name: material
+  language: ru
+  font: false
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+
+plugins:
+  - search:
+      lang:
+        - ru
+        - en
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+
+nav:
+  - Главная: index.md
+
+copyright: >-
+  Код — MIT; содержимое сайта — CC BY 4.0
+
