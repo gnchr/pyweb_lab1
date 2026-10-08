@@ -1,0 +1,35 @@
+name: Start production after merge
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      # Metadata only: no checkout, no execution of PR code, no deployment environment.
+      - name: Start main-context production workflow
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const number = context.payload.pull_request.number;
+            const pr = (await github.rest.pulls.get({...context.repo, pull_number: number})).data;
+            if (!pr.merged || pr.base.ref !== 'main' || !/^[a-f0-9]{40}$/.test(pr.merge_commit_sha || '')) {
+              throw new Error('Production requires a pull request actually merged into main.');
+            }
+            const main = (await github.rest.repos.getBranch({...context.repo, branch: 'main'})).data;
+            if (main.commit.sha !== pr.merge_commit_sha) {
+              throw new Error('Main advanced; refusing to dispatch an outdated merge.');
+            }
+            await github.rest.repos.createDispatchEvent({
+              ...context.repo, event_type: 'main-merged',
+              client_payload: {sha: pr.merge_commit_sha, pull_number: String(number)},
+            });
+            core.info(`Production dispatched for merged PR #${number}: ${pr.merge_commit_sha}`);

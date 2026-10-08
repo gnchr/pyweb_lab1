@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   deploy:
-    # Callers gate publication: push CI for automatic calls, full CI for manual calls.
+    # Every caller runs full CI for this exact commit before publication/restoration.
     permissions:
       contents: read
       deployments: write
