@@ -1,4 +1,4 @@
-name: Deploy to Helios
+name: Publish to Helios
 
 on:
   workflow_call:
@@ -12,20 +12,9 @@ on:
       action:
         type: string
         default: deploy
-  workflow_dispatch:
-    inputs:
-      action:
-        description: Operation
-        type: choice
-        options:
-          - deploy
-          - rollback
-          - recover
-        default: deploy
-      target_branch:
-        description: Branch to deploy or restore (empty means selected workflow branch)
-        type: string
-        default: ''
+      automatic:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -36,38 +25,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  resolve:
-    name: Resolve manual target
-    if: ${{ !inputs.ref }}
-    runs-on: ubuntu-latest
-    outputs:
-      ref: ${{ steps.target.outputs.ref }}
-    steps:
-      - name: Resolve branch to immutable commit
-        id: target
-        uses: actions/github-script@v9
-        env:
-          TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
-        with:
-          script: |
-            const branch = await github.rest.repos.getBranch({
-              ...context.repo, branch: process.env.TARGET_BRANCH
-            });
-            core.setOutput('ref', branch.data.commit.sha);
-
-  build:
-    name: CI
-    if: ${{ !inputs.ref }}
-    needs: resolve
-    uses: ./.github/workflows/ci-build.yml
-    with:
-      ref: ${{ needs.resolve.outputs.ref }}
-
   deploy:
-    needs: [resolve, build]
-    # Automatic callers verified the exact commit's push CI / build via ci-gate.yml.
-    # Manual operations run the same CI against the resolved target SHA first.
-    if: ${{ !cancelled() && (inputs.ref != '' || needs.build.result == 'success') }}
+    # Callers gate publication: push CI for automatic calls, full CI for manual calls.
     permissions:
       contents: read
       deployments: write
@@ -86,11 +45,11 @@ jobs:
       HELIOS_SSH_KEY: ${{ secrets.HELIOS_SSH_KEY }}
       HELIOS_KNOWN_HOSTS: ${{ secrets.HELIOS_KNOWN_HOSTS }}
       MAIN_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
-      TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
+      TARGET_BRANCH: ${{ inputs.target_branch }}
       OPERATION: ${{ inputs.action || 'deploy' }}
     steps:
       - name: Require automatic deployment to be enabled
-        if: inputs.ref != ''
+        if: inputs.automatic
         env:
           HELIOS_ENABLED: ${{ vars.HELIOS_ENABLED }}
         run: |
@@ -103,7 +62,7 @@ jobs:
         id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          ref: ${{ inputs.ref }}
 
       - name: Set up Python on GitHub runner only
         uses: actions/setup-python@v7
@@ -114,7 +73,7 @@ jobs:
       - name: Reject a superseded branch commit
         uses: actions/github-script@v9
         env:
-          EXPECTED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          EXPECTED_SHA: ${{ inputs.ref }}
         with:
           script: |
             const branch = await github.rest.repos.getBranch({
@@ -205,7 +164,7 @@ jobs:
         uses: actions/github-script@v9
         env:
           PUBLISHED_URL: ${{ steps.config.outputs.site_url }}
-          DEPLOYED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          DEPLOYED_SHA: ${{ inputs.ref }}
           RELEASE_ID: ${{ steps.publish.outputs.release }}
         with:
           script: |

@@ -3,7 +3,7 @@
     "strict": true,
     "checks": [
       {"context": "CI / build", "app_id": 15368},
-      {"context": "Deploy to Helios / deploy", "app_id": 15368}
+      {"context": "Preview ready", "app_id": 15368}
     ]
   },
   "enforce_admins": true,

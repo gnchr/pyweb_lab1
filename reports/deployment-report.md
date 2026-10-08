@@ -27,7 +27,8 @@
 
 `helios.yml` вызывается после успешного push-CI: при открытии/обновлении PR
 публикует preview, после merge в main — основную версию. Также доступны
-ручные `deploy`, `rollback`, `recover`. Передача идёт по SSH/rsync с отдельным
+ручные `rollback` и `recover`; обычный deploy только автоматический.
+Передача идёт по SSH/rsync с отдельным
 ключом CI, строгой проверкой host key и без интерактивной аутентификации.
 Закрытый ключ не хранится в Git; подготовка описана в README. Для сервера
 необходимы rsync, POSIX shell, стандартные Unix-утилиты и общая файловая система
@@ -79,7 +80,8 @@ Variables/Secrets, а не в исходниках.
 job. Очередь ограничена 100 ожидающими запусками; порядок определяется моментом
 постановки, а не гарантированным порядком push, согласно
 [документации concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-При переполнении возможна отмена новых запусков — такую ветку нужно запустить вручную.
+При переполнении возможна отмена новых запусков — соответствующий preview/
+production workflow нужно повторить через Re-run jobs.
 
 ## Healthcheck и откат
 
@@ -97,7 +99,7 @@ job. Очередь ограничена 100 ожидающими запуска
 релиз, появившийся после проверяемого. При первой публикации previous отсутствует:
 ошибка остаётся видимой, исправление требует нового деплоя.
 
-Ручной возврат: Actions → Deploy to Helios → Run workflow → action `rollback`,
+Ручной возврат: Actions → Helios rollback and recovery → Run workflow → action `rollback`,
 target_branch `main` или нужная ветка. Для команды `recover` используется
 тот же интерфейс. Откат не требует пересборки или старого Git commit: на сервере
 сохранена готовая предыдущая статика. Повторный rollback переключает версии
@@ -243,18 +245,25 @@ PR/ветки. Отсутствующий, skipped, failed или cancelled CI �
 более новый запуск имеет приоритет над старым успешным. Фильтры соответствуют
 [API workflow runs](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
 Для ручной операции сначала определяется неизменяемый SHA и запускается тот же
-полный CI — также для Pages и rollback/recover. В checkout деплоя передаётся
+полный CI для rollback/recover. Ручной deploy Helios и Pages удалён.
+В checkout деплоя передаётся
 проверенный SHA, а не подвижное имя ветки; перед публикацией повторно проверяется,
 что ветка не продвинулась.
+Ручной Helios выделен в `helios-manual.yml`: только этот workflow определяет SHA
+ветки и запускает полный CI перед восстановлением. Reusable `helios.yml`
+содержит только job `deploy`, поэтому в preview и основной автоматической
+публикации нет пропущенных `Resolve manual target` и вложенного `CI / build`.
+Серверная очередь остаётся только в reusable workflow, без двойного захвата
+одной concurrency-группы вызывающим и вызываемым workflow.
 
 В `gnchr/pyweb_lab1` для main через GitHub API включены required checks
-`CI / build`, `Deploy to Helios / deploy`, strict up-to-date и enforce admins.
+`CI / build`, `Preview ready`, strict up-to-date и enforce admins.
 Источник проверок закреплён за GitHub Actions (app 15368). Конфигурация
 хранится в `.github/branch-protection.json`, но ограничения задаются GitHub,
 не YAML-деплоем. Поэтому непройденные проверки действительно блокируют merge,
 а не только окрашивают pipeline в красный. Отключённый автоматический Helios
 завершает обязательную проверку ошибкой, а не допустимым skipped-статусом.
-Итоговый PR-job `Deploy to Helios / deploy` с `if: always()` требует успешного
+Итоговый PR-job `Preview ready` с `if: always()` требует успешного
 CI-gate и деплоя, поэтому skipped/cancelled/timeout также блокируют merge.
 Это необходимо, поскольку GitHub может принять skipped required job, как
 описано в [документации required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks).
@@ -266,7 +275,7 @@ CI-gate и деплоя, поэтому skipped/cancelled/timeout также б�
 закрытые PR и устаревшие SHA.
 Новые workflows в этой доработке проверяются локально; реальное выполнение
 новой схемы на GitHub требует commit/push изменений.
-Локальная проверка новой схемы 08.10.2026: 48 Python-тестов и 21 Node-тест
+Локальная проверка новой схемы 08.10.2026: 49 Python-тестов и 21 Node-тест
 прошли успешно, включая ожидание CI, приоритет последнего запуска, блокировку
 проваленного/отменённого/пропущенного CI, актуальность PR и merge-коммита.
 Также успешно выполнены строгая сборка, smoke-тест и браузерные проверки
@@ -274,6 +283,11 @@ CI-gate и деплоя, поэтому skipped/cancelled/timeout также б�
 подавлено только известное предупреждение старой версии линтера о
 `concurrency.queue`, поддерживаемом GitHub Actions. Реальные имена CI jobs
 и действующие required checks дополнительно сверены read-only через GitHub API.
+При переименовании итоговой проверки в `Preview ready` обновлены не только
+workflow и JSON-эталон, но и действующие required checks main через PATCH API.
+Повторный GET подтвердил `CI / build` и `Preview ready` с app 15368 и strict=true;
+остальные правила защиты не изменялись. Новые workflow-файлы ещё требуют
+commit/push, поэтому до их запуска PR ожидает проверку с новым именем.
 
 В ходе доработки исправлены прямое копирование поверх действующего сайта
 и первоначальная ошибочная зависимость от Python на Helios: серверная логика
