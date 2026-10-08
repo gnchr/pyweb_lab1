@@ -1,9 +1,11 @@
 name: Deploy to GitHub Pages
 
 on:
-  push:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions:
@@ -14,17 +16,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  resolve:
+    if: ${{ !inputs.ref }}
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.target.outputs.ref }}
+    steps:
+      - name: Resolve main for manual publication
+        id: target
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const branch = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            core.setOutput('ref', branch.data.commit.sha);
+
+  ci:
+    name: CI
+    if: ${{ !inputs.ref }}
+    needs: resolve
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
   build:
+    needs: [resolve, ci]
+    # Automatic publication was gated by push CI; a manual run performs the full CI first.
+    if: ${{ !cancelled() && (inputs.ref != '' || needs.ci.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: read
     outputs:
+      ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
       marker: ${{ steps.release.outputs.marker }}
       delivery_started: ${{ steps.measurement.outputs.delivery_started }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
+
+      - name: Reject a superseded main commit
+        uses: actions/github-script@v9
+        env:
+          EXPECTED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+        with:
+          script: |
+            const branch = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (branch.data.commit.sha !== process.env.EXPECTED_SHA) {
+              core.setFailed('Main advanced while CI was running; refusing to publish an outdated commit.');
+            }
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -34,9 +75,6 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install --requirement requirements.txt
-
-      - name: Run regression tests before deployment
-        run: python -m unittest discover -s tests -v
 
       - name: Configure GitHub Pages
         id: pages
@@ -53,7 +91,7 @@ jobs:
       - name: Stamp release
         id: release
         env:
-          RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          RELEASE_ID: ${{ inputs.ref || needs.resolve.outputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           python scripts/stamp_release.py --release "$RELEASE_ID"
           echo "marker=PYWEB_LAB1_RELEASE:$RELEASE_ID" >> "$GITHUB_OUTPUT"
@@ -80,6 +118,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.ref }}
+
+      - name: Reject a superseded main commit before publication
+        uses: actions/github-script@v9
+        env:
+          EXPECTED_SHA: ${{ needs.build.outputs.ref }}
+        with:
+          script: |
+            const branch = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (branch.data.commit.sha !== process.env.EXPECTED_SHA) {
+              core.setFailed('Main advanced during the Pages build; refusing to publish an outdated commit.');
+            }
 
       - name: Set up Python
         uses: actions/setup-python@v7

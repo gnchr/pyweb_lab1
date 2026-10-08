@@ -25,7 +25,8 @@
 для просмотра истории готовых файлов, но добавляет build-артефакты в Git.
 Здесь выбран artifact-подход; одновременно включать оба подхода не следует.
 
-`helios.yml` публикует push в любую ветку при `HELIOS_ENABLED=true` и позволяет
+`helios.yml` вызывается после успешного push-CI: при открытии/обновлении PR
+публикует preview, после merge в main — основную версию. Также доступны
 ручные `deploy`, `rollback`, `recover`. Передача идёт по SSH/rsync с отдельным
 ключом CI, строгой проверкой host key и без интерактивной аутентификации.
 Закрытый ключ не хранится в Git; подготовка описана в README. Для сервера
@@ -228,11 +229,23 @@ run URL. Исходная цель с живой демонстрацией на
 ### Доработка CI и защиты merge
 
 Устранён двойной CI на push/pull_request: полный CI выполняется только на push
-и workflow_dispatch, его check runs связаны с тем же commit в PR. Helios
-вызывается reusable workflow с `needs: build` после всех проверок, включая
-браузерный поиск. Для ручной операции сначала определяется неизменяемый SHA
-ветки и запускается тот же CI. В checkout деплоя передаётся проверенный SHA,
-а не подвижное имя ветки; перед SSH проверяется, что ветка не продвинулась.
+и workflow_dispatch, его check runs связаны с тем же commit в PR. На 08.10.2026
+push запускает только CI. `preview.yml` на opened/reopened/synchronize PR ждёт
+успешного push-CI его head SHA, затем вызывает Helios preview. `production.yml`
+на closed с merged=true ждёт push-CI merge_commit_sha в main, затем параллельно
+вызывает Helios main и GitHub Pages. Закрытие без merge и прямой push в main
+не публикуют сайт. Событие merge определяется согласно
+[документации GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#running-your-pull_request-workflow-when-a-pull-request-merges).
+
+Общий `ci-gate.yml` через API ждёт до 30 минут результат `ci.yml` именно
+с event=push, нужными head_sha и branch, проверяет job `CI / build` и актуальность
+PR/ветки. Отсутствующий, skipped, failed или cancelled CI не разрешает деплой;
+более новый запуск имеет приоритет над старым успешным. Фильтры соответствуют
+[API workflow runs](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
+Для ручной операции сначала определяется неизменяемый SHA и запускается тот же
+полный CI — также для Pages и rollback/recover. В checkout деплоя передаётся
+проверенный SHA, а не подвижное имя ветки; перед публикацией повторно проверяется,
+что ветка не продвинулась.
 
 В `gnchr/pyweb_lab1` для main через GitHub API включены required checks
 `CI / build`, `Deploy to Helios / deploy`, strict up-to-date и enforce admins.
@@ -241,20 +254,26 @@ run URL. Исходная цель с живой демонстрацией на
 не YAML-деплоем. Поэтому непройденные проверки действительно блокируют merge,
 а не только окрашивают pipeline в красный. Отключённый автоматический Helios
 завершает обязательную проверку ошибкой, а не допустимым skipped-статусом.
+Итоговый PR-job `Deploy to Helios / deploy` с `if: always()` требует успешного
+CI-gate и деплоя, поэтому skipped/cancelled/timeout также блокируют merge.
+Это необходимо, поскольку GitHub может принять skipped required job, как
+описано в [документации required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks).
 
 После успешной публикации и healthcheck URL размещается в обновляемом PR-
-комментарии, Actions Summary и environment. Отдельный metadata-only workflow
-добавляет ссылку при открытии PR после уже выполненного деплоя, не повторяя CI
-и не выполняя код PR. Отфильтрованы чужие forks, закрытые PR и устаревшие SHA.
+комментарии, Actions Summary и environment. Старый `preview-link.yml` удалён:
+при открытии PR теперь выполняется сама выкладка после проверки push-CI,
+а не только поиск ранее опубликованной ссылки. Отфильтрованы чужие forks,
+закрытые PR и устаревшие SHA.
 Новые workflows в этой доработке проверяются локально; реальное выполнение
 новой схемы на GitHub требует commit/push изменений.
-Локально успешно пройдены 43 Python-теста, 10 Node-тестов комментариев/позднего
-открытия PR, строгая сборка, smoke-тест и браузерные проверки поиска для
-GitHub Pages, Helios и preview с заблокированными внешними ресурсами.
-Workflows проверены actionlint;
-единственное подавленное предупреждение относится к пока не поддержанному
-линтером `concurrency.queue`, который поддерживается текущим GitHub Actions
-и отдельно проверяется регрессионным тестом.
+Локальная проверка новой схемы 08.10.2026: 48 Python-тестов и 21 Node-тест
+прошли успешно, включая ожидание CI, приоритет последнего запуска, блокировку
+проваленного/отменённого/пропущенного CI, актуальность PR и merge-коммита.
+Также успешно выполнены строгая сборка, smoke-тест и браузерные проверки
+трёх URL-префиксов без внешних ресурсов. Workflows проверены actionlint;
+подавлено только известное предупреждение старой версии линтера о
+`concurrency.queue`, поддерживаемом GitHub Actions. Реальные имена CI jobs
+и действующие required checks дополнительно сверены read-only через GitHub API.
 
 В ходе доработки исправлены прямое копирование поверх действующего сайта
 и первоначальная ошибочная зависимость от Python на Helios: серверная логика

@@ -17,17 +17,3 @@ jobs:
     with:
       ref: ${{ github.sha }}
 
-  deploy:
-    name: Deploy to Helios
-    needs: build
-    uses: ./.github/workflows/helios.yml
-    permissions:
-      contents: read
-      deployments: write
-      pull-requests: write
-    secrets: inherit
-    with:
-      ref: ${{ github.sha }}
-      target_branch: ${{ github.ref_name }}
-      action: deploy
-
