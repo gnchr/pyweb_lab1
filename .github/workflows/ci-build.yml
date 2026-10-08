@@ -6,14 +6,45 @@ on:
       ref:
         type: string
         required: true
+      require_merged_main:
+        type: boolean
+        default: false
+      merge_pr_number:
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate merged main before checking out production code
+        if: inputs.require_merged_main
+        uses: actions/github-script@v9
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+          PULL_NUMBER: ${{ inputs.merge_pr_number }}
+          WORKFLOW_REF: ${{ github.ref }}
+        with:
+          script: |
+            const sha = process.env.EXPECTED_SHA;
+            const number = Number(process.env.PULL_NUMBER);
+            if (process.env.WORKFLOW_REF !== 'refs/heads/main' ||
+                !/^[a-f0-9]{40}$/.test(sha || '') || !Number.isSafeInteger(number) || number < 1) {
+              throw new Error('Production CI requires main context, an immutable SHA and a merged PR number.');
+            }
+            const pr = (await github.rest.pulls.get({...context.repo, pull_number: number})).data;
+            if (!pr.merged || pr.base.ref !== 'main' || pr.merge_commit_sha !== sha) {
+              throw new Error('Production SHA is not the commit of a PR actually merged into main.');
+            }
+            const main = (await github.rest.repos.getBranch({...context.repo, branch: 'main'})).data;
+            if (main.commit.sha !== sha) {
+              throw new Error('Main advanced; refusing to check and deploy an outdated merge.');
+            }
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -31,8 +62,8 @@ jobs:
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
 
-      - name: Test CI deployment gate and preview reporting
-        run: node --test tests/test_preview.cjs tests/test_ci_gate.cjs
+      - name: Test production triggering and preview reporting
+        run: node --test tests/test_preview.cjs tests/test_production.cjs
 
       - name: Build site in strict mode
         env:

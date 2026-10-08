@@ -5,7 +5,6 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  actions: read
   contents: read
   deployments: write
   pull-requests: write
@@ -13,12 +12,10 @@ permissions:
 jobs:
   ci:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref != 'main'
-    name: Wait for CI
-    uses: ./.github/workflows/ci-gate.yml
+    name: CI
+    uses: ./.github/workflows/ci-build.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
-      branch: ${{ github.event.pull_request.head.ref }}
-      pull_number: ${{ github.event.pull_request.number }}
 
   deploy:
     name: Publish Helios preview
@@ -37,12 +34,12 @@ jobs:
     needs: [ci, deploy]
     runs-on: ubuntu-latest
     steps:
-      - name: Require successful CI gate and preview healthcheck
+      - name: Require successful CI and preview healthcheck
         env:
           CI_RESULT: ${{ needs.ci.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |
           if [ "$CI_RESULT" != "success" ] || [ "$DEPLOY_RESULT" != "success" ]; then
-            echo '::error::Preview requires successful push CI and successful Helios deployment/healthcheck.'
+            echo '::error::Preview requires successful CI and successful Helios deployment/healthcheck.'
             exit 1
           fi

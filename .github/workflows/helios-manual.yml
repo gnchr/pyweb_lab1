@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # Only helios.yml owns the server queue. Holding the same lock here would deadlock its call.
 jobs:

@@ -13,17 +13,17 @@ def workflow(name):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_one_ci_event_for_each_push_not_duplicate_pull_request(self):
-        ci = workflow('ci.yml')
-        self.assertIn('push', ci['on'])
-        self.assertNotIn('pull_request', ci['on'])
-        self.assertNotIn('pull_request_target', ci['on'])
-        self.assertEqual(ci['on']['push']['branches'], ['**'])
-        self.assertEqual(set(ci['jobs']), {'build'})
-        self.assertNotIn('push', workflow('helios.yml')['on'])
-        self.assertNotIn('push', workflow('pages.yml')['on'])
+    def test_no_workflow_runs_on_push_and_old_ci_waiting_files_are_removed(self):
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            configured = workflow(path.name)
+            self.assertNotIn('push', configured['on'], path.name)
+            self.assertNotIn('pull_request_target', configured['on'], path.name)
+            self.assertNotIn('Wait for CI', str(configured))
+        for file in ('.github/workflows/ci.yml', '.github/workflows/ci-gate.yml',
+                     'scripts/wait_for_ci.cjs', 'tests/test_ci_gate.cjs'):
+            self.assertFalse((ROOT / file).exists(), file)
 
-    def test_pr_preview_waits_for_same_head_push_ci_without_rebuilding(self):
+    def test_pr_preview_runs_full_ci_before_deploy_for_same_head_commit(self):
         preview = workflow('preview.yml')
         self.assertNotIn('branches', preview['on']['pull_request'])
         self.assertEqual(preview['on']['pull_request']['types'], ['opened', 'reopened', 'synchronize'])
@@ -31,49 +31,67 @@ class WorkflowTests(unittest.TestCase):
         jobs = preview['jobs']
         self.assertIn('head.repo.full_name == github.repository', jobs['ci']['if'])
         self.assertIn("head.ref != 'main'", jobs['ci']['if'])
-        self.assertEqual(jobs['ci']['uses'], './.github/workflows/ci-gate.yml')
+        self.assertEqual(jobs['ci']['name'], 'CI')
+        self.assertEqual(jobs['ci']['uses'], './.github/workflows/ci-build.yml')
+        self.assertEqual(set(jobs['ci']['with']), {'ref'})
         self.assertEqual(jobs['deploy']['needs'], 'ci')
         self.assertNotIn('if', jobs['deploy'])  # Default success(), never always().
         self.assertEqual(jobs['deploy']['with']['ref'], jobs['ci']['with']['ref'])
         self.assertEqual(jobs['ci']['with']['ref'], '${{ github.event.pull_request.head.sha }}')
-        self.assertEqual(jobs['deploy']['with']['target_branch'], jobs['ci']['with']['branch'])
+        self.assertEqual(jobs['deploy']['with']['target_branch'], '${{ github.event.pull_request.head.ref }}')
 
-    def test_merge_production_has_one_shared_gate_for_both_deployments(self):
+    def test_merge_production_runs_full_ci_in_main_context_before_both_deployments(self):
         production = workflow('production.yml')
-        self.assertEqual(production['on']['pull_request'], {'branches': ['main'], 'types': ['closed']})
+        self.assertEqual(production['on'], {'repository_dispatch': {'types': ['main-merged']}})
         jobs = production['jobs']
-        self.assertEqual(jobs['ci']['if'], 'github.event.pull_request.merged == true')
-        self.assertEqual(jobs['ci']['uses'], './.github/workflows/ci-gate.yml')
-        self.assertEqual(jobs['ci']['with']['merged'], 'true')
-        self.assertEqual(jobs['ci']['with']['branch'], 'main')
-        self.assertEqual(jobs['ci']['with']['ref'], '${{ github.event.pull_request.merge_commit_sha }}')
+        self.assertEqual(jobs['ci']['name'], 'CI')
+        self.assertEqual(jobs['ci']['uses'], './.github/workflows/ci-build.yml')
+        self.assertEqual(jobs['ci']['with']['require_merged_main'], 'true')
+        self.assertEqual(jobs['ci']['with']['merge_pr_number'], '${{ github.event.client_payload.pull_number }}')
+        self.assertEqual(jobs['ci']['with']['ref'], '${{ github.event.client_payload.sha }}')
         for job in ('helios', 'pages'):
             self.assertEqual(jobs[job]['needs'], 'ci')
             self.assertNotIn('if', jobs[job])
             self.assertEqual(jobs[job]['with']['ref'], jobs['ci']['with']['ref'])
         self.assertEqual(jobs['helios']['with']['target_branch'], 'main')
 
-    def test_ci_gate_uses_read_only_permissions_and_exact_target_checkout(self):
-        gate = workflow('ci-gate.yml')
-        self.assertEqual(set(gate['on']), {'workflow_call'})
-        self.assertTrue(all(p == 'read' for p in gate['permissions'].values()))
-        self.assertEqual(gate['permissions']['actions'], 'read')
-        steps = gate['jobs']['wait']['steps']
-        self.assertEqual(steps[0]['with']['ref'], '${{ inputs.ref }}')
-        self.assertIn('wait_for_ci.cjs', steps[-1]['with']['script'])
-        self.assertNotIn('ci-build.yml', str(gate))
+    def test_merge_dispatcher_is_metadata_only_and_requires_actual_merge(self):
+        merge = workflow('merge.yml')
+        self.assertEqual(merge['on'], {'pull_request': {'branches': ['main'], 'types': ['closed']}})
+        job = merge['jobs']['dispatch']
+        self.assertEqual(job['if'], 'github.event.pull_request.merged == true')
+        self.assertEqual(len(job['steps']), 1)
+        self.assertNotIn('actions/checkout', str(job))
+        self.assertNotIn('environment', job)
+        self.assertNotIn('secrets.', str(job))
+        self.assertEqual(merge['permissions']['contents'], 'write')
+        script = job['steps'][0]['with']['script']
+        self.assertIn('createDispatchEvent', script)
+        self.assertIn("event_type: 'main-merged'", script)
 
-    def test_full_ci_checks_include_the_new_gate_regressions_and_pinned_checkout(self):
+    def test_production_target_verified_using_metadata_before_checkout(self):
+        ci = workflow('ci-build.yml')
+        self.assertTrue(all(p == 'read' for p in ci['permissions'].values()))
+        self.assertEqual(ci['on']['workflow_call']['inputs']['require_merged_main']['default'], 'false')
+        steps = ci['jobs']['build']['steps']
+        validation = steps[0]
+        self.assertEqual(validation['if'], 'inputs.require_merged_main')
+        self.assertIn("WORKFLOW_REF !== 'refs/heads/main'", validation['with']['script'])
+        self.assertIn('pr.merge_commit_sha !== sha', validation['with']['script'])
+        self.assertTrue(steps[1]['uses'].startswith('actions/checkout@'))
+        self.assertEqual(steps[1]['with']['ref'], '${{ inputs.ref }}')
+
+    def test_full_ci_checks_include_production_regressions_and_pinned_checkout(self):
         build = workflow('ci-build.yml')['jobs']['build']
         checkout = next(s for s in build['steps'] if s.get('uses', '').startswith('actions/checkout@'))
         self.assertEqual(checkout['with']['ref'], '${{ inputs.ref }}')
-        self.assertIn('tests/test_ci_gate.cjs', str(build['steps']))
+        self.assertIn('tests/test_production.cjs', str(build['steps']))
 
     def test_required_checks_match_unique_reusable_job_names_and_include_admins(self):
-        ci = workflow('ci.yml')
+        ci = workflow('preview.yml')
         protection = json.loads((ROOT / '.github/branch-protection.json').read_text())
         required = {c['context'] for c in protection['required_status_checks']['checks']}
-        names = {ci['jobs']['build']['name'] + ' / build', workflow('preview.yml')['jobs']['result']['name']}
+        names = {ci['jobs']['ci']['name'] + ' / build', ci['jobs']['result']['name']}
         self.assertEqual(required, names)
         self.assertEqual(required, {'CI / build', 'Preview ready'})
         self.assertTrue(protection['required_status_checks']['strict'])
@@ -146,6 +164,18 @@ class WorkflowTests(unittest.TestCase):
                          ('deploy', '${{ needs.build.outputs.ref }}')]:
             checkout = next(s for s in jobs[job]['steps'] if s.get('uses', '').startswith('actions/checkout@'))
             self.assertEqual(checkout['with']['ref'], ref)
+
+    def test_pages_requires_main_context_and_preserves_oidc_and_environment(self):
+        jobs = workflow('pages.yml')['jobs']
+        guard = jobs['build']['steps'][0]
+        self.assertEqual(guard['env']['WORKFLOW_REF'], '${{ github.ref }}')
+        self.assertIn('"$WORKFLOW_REF" != "refs/heads/main"', guard['run'])
+        self.assertIn('exit 1', guard['run'])
+        self.assertEqual(jobs['deploy']['environment']['name'], 'github-pages')
+        self.assertEqual(jobs['deploy']['permissions']['pages'], 'write')
+        self.assertEqual(jobs['deploy']['permissions']['id-token'], 'write')
+        uses = [s.get('uses', '') for s in jobs['deploy']['steps']]
+        self.assertTrue(any(u.startswith('actions/deploy-pages@') for u in uses))
 
     def test_disabled_deploy_fails_instead_of_skipping_required_check(self):
         deploy = workflow('helios.yml')['jobs']['deploy']

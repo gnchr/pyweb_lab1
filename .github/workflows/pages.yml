@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    # production.yml calls this workflow only after successful push CI for this exact commit.
+    # production.yml runs full CI first and calls this workflow in main context.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,6 +26,15 @@ jobs:
       marker: ${{ steps.release.outputs.marker }}
       delivery_started: ${{ steps.measurement.outputs.delivery_started }}
     steps:
+      - name: Require main workflow context
+        env:
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then
+            echo '::error::GitHub Pages requires main workflow context, not a PR merge ref.'
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:

@@ -1,12 +1,11 @@
 name: Deploy merged main
 
 on:
-  pull_request:
-    branches: [main]
-    types: [closed]
+  # repository_dispatch runs on the default branch (main), never refs/pull/*/merge.
+  repository_dispatch:
+    types: [main-merged]
 
 permissions:
-  actions: read
   contents: read
   deployments: write
   pull-requests: write
@@ -15,14 +14,12 @@ permissions:
 
 jobs:
   ci:
-    if: github.event.pull_request.merged == true
-    name: Wait for main CI
-    uses: ./.github/workflows/ci-gate.yml
+    name: CI
+    uses: ./.github/workflows/ci-build.yml
     with:
-      ref: ${{ github.event.pull_request.merge_commit_sha }}
-      branch: main
-      pull_number: ${{ github.event.pull_request.number }}
-      merged: true
+      ref: ${{ github.event.client_payload.sha }}
+      require_merged_main: true
+      merge_pr_number: ${{ github.event.client_payload.pull_number }}
 
   helios:
     name: Deploy to Helios
@@ -30,7 +27,7 @@ jobs:
     uses: ./.github/workflows/helios.yml
     secrets: inherit
     with:
-      ref: ${{ github.event.pull_request.merge_commit_sha }}
+      ref: ${{ github.event.client_payload.sha }}
       target_branch: main
       action: deploy
 
@@ -39,4 +36,4 @@ jobs:
     needs: ci
     uses: ./.github/workflows/pages.yml
     with:
-      ref: ${{ github.event.pull_request.merge_commit_sha }}
+      ref: ${{ github.event.client_payload.sha }}

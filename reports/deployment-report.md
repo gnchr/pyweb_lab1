@@ -25,7 +25,7 @@
 для просмотра истории готовых файлов, но добавляет build-артефакты в Git.
 Здесь выбран artifact-подход; одновременно включать оба подхода не следует.
 
-`helios.yml` вызывается после успешного push-CI: при открытии/обновлении PR
+`helios.yml` вызывается после успешного CI в том же workflow: при открытии/обновлении PR
 публикует preview, после merge в main — основную версию. Также доступны
 ручные `rollback` и `recover`; обычный deploy только автоматический.
 Передача идёт по SSH/rsync с отдельным
@@ -230,20 +230,23 @@ run URL. Исходная цель с живой демонстрацией на
 
 ### Доработка CI и защиты merge
 
-Устранён двойной CI на push/pull_request: полный CI выполняется только на push
-и workflow_dispatch, его check runs связаны с тем же commit в PR. На 08.10.2026
-push запускает только CI. `preview.yml` на opened/reopened/synchronize PR ждёт
-успешного push-CI его head SHA, затем вызывает Helios preview. `production.yml`
-на closed с merged=true ждёт push-CI merge_commit_sha в main, затем параллельно
-вызывает Helios main и GitHub Pages. Закрытие без merge и прямой push в main
-не публикуют сайт. Событие merge определяется согласно
+На 08.10.2026 ни один workflow не подписан на push. `preview.yml` на
+opened/reopened/synchronize PR запускает полный `CI / build` для head SHA,
+затем через `needs: ci` вызывает Helios preview. `merge.yml` на closed с
+merged=true проверяет метаданные merge и отправляет `repository_dispatch:
+main-merged`. `production.yml` получает main-контекст, запускает полный CI
+merge-коммита, затем параллельно вызывает Helios main и GitHub Pages.
+Закрытие без merge и прямой push в main ничего не публикуют. Обновление
+открытого PR запускает проверки по событию PR, а не по push. Событие merge определяется согласно
 [документации GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#running-your-pull_request-workflow-when-a-pull-request-merges).
 
-Общий `ci-gate.yml` через API ждёт до 30 минут результат `ci.yml` именно
-с event=push, нужными head_sha и branch, проверяет job `CI / build` и актуальность
-PR/ветки. Отсутствующий, skipped, failed или cancelled CI не разрешает деплой;
-более новый запуск имеет приоритет над старым успешным. Фильтры соответствуют
-[API workflow runs](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
+Старые `ci.yml`, `ci-gate.yml`, `wait_for_ci.cjs` и их тест ожидания удалены.
+Ожидания внешнего CI нет: dependencies обеспечивают порядок внутри workflow.
+Перед checkout production CI проверяет ref=refs/heads/main, факт merge в main,
+merge_commit_sha и актуальность main. Не прошедший/отменённый CI не разрешает
+деплой. `repository_dispatch` использует default branch и может автоматически
+запускаться через GITHUB_TOKEN, согласно
+[событиям GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#repository_dispatch).
 Для ручной операции сначала определяется неизменяемый SHA и запускается тот же
 полный CI для rollback/recover. Ручной deploy Helios и Pages удалён.
 В checkout деплоя передаётся
@@ -264,20 +267,20 @@ PR/ветки. Отсутствующий, skipped, failed или cancelled CI �
 а не только окрашивают pipeline в красный. Отключённый автоматический Helios
 завершает обязательную проверку ошибкой, а не допустимым skipped-статусом.
 Итоговый PR-job `Preview ready` с `if: always()` требует успешного
-CI-gate и деплоя, поэтому skipped/cancelled/timeout также блокируют merge.
+CI и деплоя, поэтому skipped/cancelled/timeout также блокируют merge.
 Это необходимо, поскольку GitHub может принять skipped required job, как
 описано в [документации required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks).
 
 После успешной публикации и healthcheck URL размещается в обновляемом PR-
 комментарии, Actions Summary и environment. Старый `preview-link.yml` удалён:
-при открытии PR теперь выполняется сама выкладка после проверки push-CI,
+при открытии PR теперь выполняются полный CI и выкладка,
 а не только поиск ранее опубликованной ссылки. Отфильтрованы чужие forks,
 закрытые PR и устаревшие SHA.
 Новые workflows в этой доработке проверяются локально; реальное выполнение
 новой схемы на GitHub требует commit/push изменений.
-Локальная проверка новой схемы 08.10.2026: 49 Python-тестов и 21 Node-тест
-прошли успешно, включая ожидание CI, приоритет последнего запуска, блокировку
-проваленного/отменённого/пропущенного CI, актуальность PR и merge-коммита.
+Локально новая схема проверена 51 Python-тестом и 15 Node-тестами: все прошли,
+включая отсутствие push-триггеров, порядок CI → deploy, dispatch только после
+merge, main-контекст и проверку merge SHA до checkout.
 Также успешно выполнены строгая сборка, smoke-тест и браузерные проверки
 трёх URL-префиксов без внешних ресурсов. Workflows проверены actionlint;
 подавлено только известное предупреждение старой версии линтера о
@@ -286,8 +289,31 @@ CI-gate и деплоя, поэтому skipped/cancelled/timeout также б�
 При переименовании итоговой проверки в `Preview ready` обновлены не только
 workflow и JSON-эталон, но и действующие required checks main через PATCH API.
 Повторный GET подтвердил `CI / build` и `Preview ready` с app 15368 и strict=true;
-остальные правила защиты не изменялись. Новые workflow-файлы ещё требуют
-commit/push, поэтому до их запуска PR ожидает проверку с новым именем.
+остальные правила защиты не изменялись. В текущей схеме имена required checks
+сохранены; для её реального запуска нужны commit/push обновлённых workflows.
+
+### Отказ environment GitHub Pages после merge PR #7
+
+Read-only диагностика GitHub API подтвердила: environment `github-pages`
+использует custom branch policy и разрешает только branch `main`. Последний
+[production run](https://github.com/gnchr/pyweb_lab1/actions/runs/37828237217)
+с event=pull_request завершился failure для `Deploy to GitHub Pages / deploy`,
+хотя Pages build и Helios deploy прошли. Полученный пользователем отказ
+указывает на `refs/pull/7/merge`, не разрешённый environment. В предыдущем
+зелёном run Pages deploy был skipped, то есть успех workflow не доказывал
+публикацию Pages.
+
+Причина: checkout merge SHA меняет файлы на runner, но не `github.ref`,
+используемый deployment protection/OIDC. Поэтому метаданные merge отдельно
+передаются production через repository_dispatch с main-контекстом. Правило
+«только main» не ослабляется; PR-refs не добавляются в разрешённые. Перед
+Pages build дополнительно проверяется main-ref. При failed CI публикация
+штатно пропускается, но весь workflow остаётся failed; при успешном CI deploy
+действительно запускается, его ошибка не маскируется веточным условием.
+Политики ref описаны в
+[документации environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
+Фактический успешный запуск исправленной Pages-публикации требует commit/push
+и нового merge: старый Re-run использует прежнюю версию workflow и тот же PR-ref.
 
 В ходе доработки исправлены прямое копирование поверх действующего сайта
 и первоначальная ошибочная зависимость от Python на Helios: серверная логика
