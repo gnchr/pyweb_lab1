@@ -1,0 +1,67 @@
+name: Helios rollback and recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Operation
+        type: choice
+        options:
+          - rollback
+          - recover
+        default: rollback
+      target_branch:
+        description: Branch to roll back or recover (empty means selected workflow branch)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Only helios.yml owns the server queue. Holding the same lock here would deadlock its call.
+jobs:
+  resolve:
+    name: Resolve manual target
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.target.outputs.ref }}
+      branch: ${{ steps.target.outputs.branch }}
+    steps:
+      - name: Resolve branch to immutable commit
+        id: target
+        uses: actions/github-script@v9
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
+          OPERATION: ${{ inputs.action }}
+        with:
+          script: |
+            if (!['rollback', 'recover'].includes(process.env.OPERATION)) {
+              throw new Error('Manual Helios workflow supports rollback/recover only; deployment is automatic.');
+            }
+            const branch = await github.rest.repos.getBranch({
+              ...context.repo, branch: process.env.TARGET_BRANCH
+            });
+            core.setOutput('ref', branch.data.commit.sha);
+            core.setOutput('branch', process.env.TARGET_BRANCH);
+
+  build:
+    name: CI
+    needs: resolve
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
+  publish:
+    name: Restore on Helios
+    needs: [resolve, build]
+    uses: ./.github/workflows/helios.yml
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    secrets: inherit
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+      target_branch: ${{ needs.resolve.outputs.branch }}
+      action: ${{ inputs.action }}
+      automatic: false

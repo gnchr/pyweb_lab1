@@ -71,7 +71,7 @@ mkdocs serve
 Workflow `.github/workflows/pages.yml` собирает сайт и публикует artifact через
 официальную связку `actions/upload-pages-artifact` и `actions/deploy-pages`.
 Автоматически вызывается из `production.yml` после merge PR в main и успешного
-push-CI merge-коммита. Ручной запуск сначала выполняет полный CI текущего main.
+push-CI merge-коммита. Ручного запуска обычного деплоя нет.
 
 Перед первым деплоем в настройках репозитория нужно выбрать:
 
@@ -102,10 +102,14 @@ push-CI merge-коммита. Ручной запуск сначала выпо�
 Дополнительная папка `site` на сервере не создаётся. Остальные лабораторные
 работы в `public_html` не участвуют в синхронизации.
 
-Workflow `.github/workflows/helios.yml` можно запустить вручную. Автоматический
+Workflow `.github/workflows/helios-manual.yml` позволяет вручную выполнить только
+`rollback` и `recover`, но не обычный деплой. Автоматический
 деплой вызывают `preview.yml` и `production.yml` только **после успешного
 полного push-CI** для того же SHA.
 Для него нужна переменная репозитория `HELIOS_ENABLED=true`.
+Общий `helios.yml` содержит только job публикации. Определение SHA и полный CI
+для ручных операций вынесены в `helios-manual.yml`, поэтому при preview/main
+не появляются пропущенные `Resolve manual target` и `CI / build` внутри публикации.
 
 ### CI, обязательные проверки PR и ссылка на preview
 
@@ -132,9 +136,8 @@ skipped, отсутствие проверки и timeout не разрешаю�
 
 Деплой привязан к **тому же SHA**, который проверял CI. Если за время проверки
 ветка продвинулась, устаревший запуск откажется от публикации. При ручном запуске
-Helios сначала фиксируется SHA целевой ветки и выполняется тот же CI; это
-относится также к операциям rollback/recover. Ручной GitHub Pages также
-выполняет полный CI до публикации.
+Helios сначала фиксируется SHA целевой ветки и выполняется тот же CI для
+операций rollback/recover. Обычный деплой Helios и Pages только автоматический.
 
 После успешного healthcheck в открытом PR появляется комментарий бота
 **«Preview на Helios»** со ссылкой на сайт, ID релиза и запуск Actions.
@@ -145,14 +148,14 @@ preview публикуется сразу после проверки его р�
 не поддерживается; такие изменения сначала нужно перенести в доверенную ветку.
 
 На GitHub для `main` включена защита: требуется актуальная база ветки,
-успешные **`CI / build`** и **`Deploy to Helios / deploy`** от GitHub Actions,
+успешные **`CI / build`** и **`Preview ready`** от GitHub Actions,
 правила действуют и для администратора. Проверить можно в
 **Settings → Branches → Branch protection rules → main**.
 Конфигурация сохранена в `.github/branch-protection.json` как эталон; сам файл
 не включает защиту — ограничения применяются в настройках GitHub.
 
 При неуспешном CI деплой не начинается; при неуспешном деплое/healthcheck
-merge блокируется. Обязательный итоговый job `Deploy to Helios / deploy`
+merge блокируется. Обязательный итоговый job `Preview ready`
 успешен только при успешных CI-gate и публикации: skipped/cancelled/timeout
 не дают ложного разрешения на merge. `HELIOS_ENABLED=false` приводит к failed обязательной
 проверке автоматического деплоя, а не к skipped/успешному статусу. После
@@ -169,7 +172,7 @@ merge блокируется. Обязательный итоговый job `Dep
 
 | Name | Value |
 | --- | --- |
-| `HELIOS_ENABLED` | `true` — автоматический деплой после успешного CI; `false` — только ручной запуск, обязательная автоматическая проверка PR завершится ошибкой |
+| `HELIOS_ENABLED` | `true` — автоматический деплой после успешного CI; `false` — только ручные rollback/recover, обязательная автоматическая проверка PR завершится ошибкой |
 | `HELIOS_HOST` | `helios.cs.ifmo.ru` |
 | `HELIOS_PORT` | `2222` |
 | `HELIOS_DEPLOY_PATH` | `/home/studs/sXXXXXX/public_html/pyweb_lab1` |
@@ -247,13 +250,14 @@ ssh-keygen -F "[helios.cs.ifmo.ru]:2222" -f "$env:USERPROFILE\.ssh\known_hosts"
 
 ### Как запустить деплой
 
-Отправь файлы проекта в ветку `main`, заполни настройки и открой
-**Actions → Deploy to Helios → Run workflow → Branch: main → action: deploy → Run workflow**.
-Ручной запуск работает и при `HELIOS_ENABLED=false`.
-После успешного запуска сайт доступен по значению `HELIOS_SITE_URL`.
+Заполни настройки, установи `HELIOS_ENABLED=true`, отправь изменения в рабочую
+ветку и открой PR. Дождись успешных `CI / build` и `Preview ready`, проверь
+preview по ссылке в комментарии и выполни merge в main. После успешного CI
+merge-коммита сайт автоматически публикуется на Helios и GitHub Pages.
+Основной адрес Helios задан в `HELIOS_SITE_URL`.
 При `HELIOS_ENABLED=true` открытие/обновление PR публикует preview, а merge PR
 в main обновляет основной сайт — в обоих случаях после успешного push-CI.
-Для ручного запуска можно указать `target_branch`;
+Для ручных rollback/recover можно указать `target_branch`;
 пустое значение означает ветку, выбранную в Run workflow.
 
 Перед синхронизацией `deploy_helios.py` проверяет параметры подключения и точный
@@ -289,11 +293,13 @@ deployment or preview; этот URL используется и в `site_url` Mk
 
 ### Ручной откат и восстановление
 
-В **Actions → Deploy to Helios → Run workflow** выбери ветку с актуальными
+В **Actions → Helios rollback and recovery → Run workflow** выбери ветку с актуальными
 workflow/скриптами, `action: rollback` и `target_branch: main` (либо имя preview-
 ветки). Сайт не пересобирается: активируется сохранённая предыдущая версия,
 затем выполняется публичный healthcheck. Повторный rollback меняет версии
 местами. Для отката preview его ветка должна ещё существовать в GitHub.
+Ручные rollback/recover доступны также при `HELIOS_ENABLED=false` и требуют
+успешного полного CI. Ручной обычный deploy отсутствует на обеих площадках.
 
 Если процесс прервался во время переключения каталогов, выбери `action: recover`
 с той же целевой веткой. Журнал восстанавливается также автоматически перед

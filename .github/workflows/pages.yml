@@ -6,7 +6,6 @@ on:
       ref:
         type: string
         required: true
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,50 +15,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  resolve:
-    if: ${{ !inputs.ref }}
-    runs-on: ubuntu-latest
-    outputs:
-      ref: ${{ steps.target.outputs.ref }}
-    steps:
-      - name: Resolve main for manual publication
-        id: target
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const branch = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
-            core.setOutput('ref', branch.data.commit.sha);
-
-  ci:
-    name: CI
-    if: ${{ !inputs.ref }}
-    needs: resolve
-    uses: ./.github/workflows/ci-build.yml
-    with:
-      ref: ${{ needs.resolve.outputs.ref }}
-
   build:
-    needs: [resolve, ci]
-    # Automatic publication was gated by push CI; a manual run performs the full CI first.
-    if: ${{ !cancelled() && (inputs.ref != '' || needs.ci.result == 'success') }}
+    # production.yml calls this workflow only after successful push CI for this exact commit.
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: read
     outputs:
-      ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
+      ref: ${{ inputs.ref }}
       marker: ${{ steps.release.outputs.marker }}
       delivery_started: ${{ steps.measurement.outputs.delivery_started }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          ref: ${{ inputs.ref }}
 
       - name: Reject a superseded main commit
         uses: actions/github-script@v9
         env:
-          EXPECTED_SHA: ${{ inputs.ref || needs.resolve.outputs.ref }}
+          EXPECTED_SHA: ${{ inputs.ref }}
         with:
           script: |
             const branch = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
@@ -91,7 +66,7 @@ jobs:
       - name: Stamp release
         id: release
         env:
-          RELEASE_ID: ${{ inputs.ref || needs.resolve.outputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          RELEASE_ID: ${{ inputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           python scripts/stamp_release.py --release "$RELEASE_ID"
           echo "marker=PYWEB_LAB1_RELEASE:$RELEASE_ID" >> "$GITHUB_OUTPUT"

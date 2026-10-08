@@ -75,6 +75,7 @@ class WorkflowTests(unittest.TestCase):
         required = {c['context'] for c in protection['required_status_checks']['checks']}
         names = {ci['jobs']['build']['name'] + ' / build', workflow('preview.yml')['jobs']['result']['name']}
         self.assertEqual(required, names)
+        self.assertEqual(required, {'CI / build', 'Preview ready'})
         self.assertTrue(protection['required_status_checks']['strict'])
         self.assertTrue(protection['enforce_admins'])
         self.assertTrue(all(c['app_id'] == 15368 for c in protection['required_status_checks']['checks']))
@@ -92,33 +93,65 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('exit 1', step['run'])
 
     def test_manual_operations_have_ci_gate_with_immutable_target(self):
-        jobs = workflow('helios.yml')['jobs']
+        manual = workflow('helios-manual.yml')
+        self.assertEqual(set(manual['on']), {'workflow_dispatch'})
+        action = manual['on']['workflow_dispatch']['inputs']['action']
+        self.assertEqual(action['options'], ['rollback', 'recover'])
+        self.assertEqual(action['default'], 'rollback')
+        jobs = manual['jobs']
+        resolve_step = jobs['resolve']['steps'][0]
+        self.assertEqual(resolve_step['env']['OPERATION'], '${{ inputs.action }}')
+        self.assertIn("['rollback', 'recover'].includes(process.env.OPERATION)", resolve_step['with']['script'])
         self.assertEqual(jobs['build']['needs'], 'resolve')
         self.assertEqual(jobs['build']['with']['ref'], '${{ needs.resolve.outputs.ref }}')
-        self.assertIn('build', jobs['deploy']['needs'])
-        self.assertIn("needs.build.result == 'success'", jobs['deploy']['if'])
-        self.assertEqual(jobs['resolve']['if'], '${{ !inputs.ref }}')
-        self.assertEqual(jobs['build']['if'], '${{ !inputs.ref }}')
+        publish = jobs['publish']
+        self.assertEqual(set(publish['needs']), {'resolve', 'build'})
+        self.assertNotIn('if', publish)  # Only success() allows publication.
+        self.assertEqual(publish['uses'], './.github/workflows/helios.yml')
+        self.assertEqual(publish['with']['ref'], jobs['build']['with']['ref'])
+        self.assertEqual(publish['with']['target_branch'], '${{ needs.resolve.outputs.branch }}')
+        self.assertEqual(publish['with']['automatic'], 'false')
+        self.assertEqual(publish['secrets'], 'inherit')
 
-    def test_manual_pages_performs_full_ci_before_build_and_deploy(self):
-        jobs = workflow('pages.yml')['jobs']
-        self.assertEqual(jobs['ci']['uses'], './.github/workflows/ci-build.yml')
-        self.assertEqual(jobs['ci']['needs'], 'resolve')
-        self.assertEqual(jobs['ci']['with']['ref'], '${{ needs.resolve.outputs.ref }}')
-        self.assertIn('ci', jobs['build']['needs'])
-        self.assertIn("needs.ci.result == 'success'", jobs['build']['if'])
-        self.assertEqual(jobs['ci']['if'], '${{ !inputs.ref }}')
+    def test_reusable_helios_contains_only_publication_no_skipped_manual_jobs(self):
+        helios = workflow('helios.yml')
+        self.assertEqual(set(helios['on']), {'workflow_call'})
+        self.assertEqual(set(helios['jobs']), {'deploy'})
+        deploy = helios['jobs']['deploy']
+        self.assertNotIn('needs', deploy)
+        self.assertNotIn('if', deploy)
+        self.assertNotIn('needs.resolve', str(helios))
+        checkout = next(s for s in deploy['steps'] if s.get('uses', '').startswith('actions/checkout@'))
+        self.assertEqual(checkout['with']['ref'], '${{ inputs.ref }}')
+        self.assertEqual(helios['on']['workflow_call']['inputs']['automatic']['default'], 'true')
+        for file, job in [('preview.yml', 'deploy'), ('production.yml', 'helios')]:
+            caller = workflow(file)['jobs'][job]
+            self.assertEqual(caller['uses'], './.github/workflows/helios.yml')
+            self.assertEqual(caller['needs'], 'ci')
+            self.assertNotIn('automatic', caller['with'])
+
+    def test_pages_only_automatically_called_after_production_ci_without_manual_jobs(self):
+        pages = workflow('pages.yml')
+        self.assertEqual(set(pages['on']), {'workflow_call'})
+        jobs = pages['jobs']
+        self.assertEqual(set(jobs), {'build', 'deploy'})
+        caller = workflow('production.yml')['jobs']['pages']
+        self.assertEqual(caller['uses'], './.github/workflows/pages.yml')
+        self.assertEqual(caller['needs'], 'ci')
+        self.assertNotIn('if', caller)
+        self.assertNotIn('needs.resolve', str(pages))
         self.assertEqual(jobs['deploy']['needs'], 'build')
         self.assertNotIn('if', jobs['deploy'])
-        for job, ref in [('build', '${{ inputs.ref || needs.resolve.outputs.ref }}'),
+        for job, ref in [('build', '${{ inputs.ref }}'),
                          ('deploy', '${{ needs.build.outputs.ref }}')]:
             checkout = next(s for s in jobs[job]['steps'] if s.get('uses', '').startswith('actions/checkout@'))
             self.assertEqual(checkout['with']['ref'], ref)
 
     def test_disabled_deploy_fails_instead_of_skipping_required_check(self):
         deploy = workflow('helios.yml')['jobs']['deploy']
-        self.assertNotIn('HELIOS_ENABLED', deploy['if'])
+        self.assertNotIn('if', deploy)
         step = next(s for s in deploy['steps'] if s.get('env', {}).get('HELIOS_ENABLED'))
+        self.assertEqual(step['if'], 'inputs.automatic')
         self.assertIn('exit 1', step['run'])
 
     def test_preview_report_is_last_and_not_always_after_failure(self):
@@ -136,6 +169,7 @@ class WorkflowTests(unittest.TestCase):
         concurrency = workflow('helios.yml')['concurrency']
         self.assertEqual(concurrency['queue'], 'max')
         self.assertEqual(concurrency['cancel-in-progress'], 'false')
+        self.assertNotIn('concurrency', workflow('helios-manual.yml'))
 
 
 if __name__ == '__main__':

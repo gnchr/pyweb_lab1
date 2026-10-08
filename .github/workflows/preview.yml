@@ -32,7 +32,7 @@ jobs:
 
   result:
     # GitHub accepts skipped required jobs. Report failure explicitly if CI/deploy was skipped.
-    name: Deploy to Helios / deploy
+    name: Preview ready
     if: always()
     needs: [ci, deploy]
     runs-on: ubuntu-latest
