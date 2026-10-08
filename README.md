@@ -70,6 +70,8 @@ mkdocs serve
 
 Workflow `.github/workflows/pages.yml` собирает сайт и публикует artifact через
 официальную связку `actions/upload-pages-artifact` и `actions/deploy-pages`.
+Автоматически вызывается из `production.yml` после merge PR в main и успешного
+push-CI merge-коммита. Ручной запуск сначала выполняет полный CI текущего main.
 
 Перед первым деплоем в настройках репозитория нужно выбрать:
 
@@ -101,7 +103,8 @@ Workflow `.github/workflows/pages.yml` собирает сайт и публик
 работы в `public_html` не участвуют в синхронизации.
 
 Workflow `.github/workflows/helios.yml` можно запустить вручную. Автоматический
-деплой вызывает `ci.yml` только **после успешного полного CI** для того же SHA.
+деплой вызывают `preview.yml` и `production.yml` только **после успешного
+полного push-CI** для того же SHA.
 Для него нужна переменная репозитория `HELIOS_ENABLED=true`.
 
 ### CI, обязательные проверки PR и ссылка на preview
@@ -110,20 +113,35 @@ Workflow `.github/workflows/helios.yml` можно запустить вручн
 на `pull_request`. Проверки push отображаются в PR для того же commit.
 Полный набор проверок вынесен в reusable `ci-build.yml`: регрессионные тесты,
 строгая сборка, smoke-тест, демонстрация отката и браузерный тест.
-Последовательность: `CI / build` → `Deploy to Helios / deploy`.
+Сам push запускает только `CI / build`, без деплоев.
+
+| Событие | Что выполняется |
+| --- | --- |
+| Push в любую ветку | Только полный CI |
+| Открытие/повторное открытие PR рабочей ветки | `preview.yml`: ожидание push-CI head SHA → Helios preview → healthcheck → комментарий с URL |
+| Новый push в открытый PR | CI по push; preview обновляется по `pull_request: synchronize` после успешного CI нового SHA |
+| Merge PR в main | CI merge-коммита по push; `production.yml` ждёт его и параллельно вызывает Helios main и GitHub Pages |
+| Закрытие PR без merge | Без деплоя |
+| Прямой push в main без merge PR | Только CI, без автоматической публикации |
+
+`ci-gate.yml` проверяет через GitHub API результат `ci.yml` для **точного SHA и
+ветки**, а также успешный job `CI / build`. Если CI ещё выполняется либо ещё
+не появился в API, ожидание продолжается до 30 минут. Failed, cancelled,
+skipped, отсутствие проверки и timeout не разрешают деплой. Проверки не
+дублируются в PR. При merge проверяется новый SHA в main, а не старый head PR.
 
 Деплой привязан к **тому же SHA**, который проверял CI. Если за время проверки
 ветка продвинулась, устаревший запуск откажется от публикации. При ручном запуске
 Helios сначала фиксируется SHA целевой ветки и выполняется тот же CI; это
-относится также к операциям rollback/recover.
+относится также к операциям rollback/recover. Ручной GitHub Pages также
+выполняет полный CI до публикации.
 
 После успешного healthcheck в открытом PR появляется комментарий бота
 **«Preview на Helios»** со ссылкой на сайт, ID релиза и запуск Actions.
 Следующая публикация обновляет комментарий. Ссылка также записывается в
-Actions Summary и URL environment `helios`. Если PR открыли уже после выкладки,
-metadata-only workflow `preview-link.yml` найдёт успешный deployment того же
-SHA и добавит ссылку без новой сборки/SSH. Он не checkout-ит и не исполняет
-код PR. Для PR из чужих forks автоматическая публикация с SSH-секретами
+Actions Summary и URL environment `helios`. Если CI прошёл до открытия PR,
+preview публикуется сразу после проверки его результата, без повторного CI.
+Для PR из чужих forks автоматическая публикация с SSH-секретами
 не поддерживается; такие изменения сначала нужно перенести в доверенную ветку.
 
 На GitHub для `main` включена защита: требуется актуальная база ветки,
@@ -134,7 +152,9 @@ SHA и добавит ссылку без новой сборки/SSH. Он не
 не включает защиту — ограничения применяются в настройках GitHub.
 
 При неуспешном CI деплой не начинается; при неуспешном деплое/healthcheck
-merge блокируется. `HELIOS_ENABLED=false` приводит к failed обязательной
+merge блокируется. Обязательный итоговый job `Deploy to Helios / deploy`
+успешен только при успешных CI-gate и публикации: skipped/cancelled/timeout
+не дают ложного разрешения на merge. `HELIOS_ENABLED=false` приводит к failed обязательной
 проверке автоматического деплоя, а не к skipped/успешному статусу. После
 публикации изменений workflows нужно дождаться обеих новых проверок; старые
 проверки с именами `build`/`deploy` не удовлетворяют новой защите.
@@ -231,8 +251,9 @@ ssh-keygen -F "[helios.cs.ifmo.ru]:2222" -f "$env:USERPROFILE\.ssh\known_hosts"
 **Actions → Deploy to Helios → Run workflow → Branch: main → action: deploy → Run workflow**.
 Ручной запуск работает и при `HELIOS_ENABLED=false`.
 После успешного запуска сайт доступен по значению `HELIOS_SITE_URL`.
-При `HELIOS_ENABLED=true` следующие push обновят основной сайт или preview
-соответствующей ветки. Для ручного запуска можно указать `target_branch`;
+При `HELIOS_ENABLED=true` открытие/обновление PR публикует preview, а merge PR
+в main обновляет основной сайт — в обоих случаях после успешного push-CI.
+Для ручного запуска можно указать `target_branch`;
 пустое значение означает ветку, выбранную в Run workflow.
 
 Перед синхронизацией `deploy_helios.py` проверяет параметры подключения и точный

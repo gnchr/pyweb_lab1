@@ -1,0 +1,42 @@
+name: Deploy merged main
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  actions: read
+  contents: read
+  deployments: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+jobs:
+  ci:
+    if: github.event.pull_request.merged == true
+    name: Wait for main CI
+    uses: ./.github/workflows/ci-gate.yml
+    with:
+      ref: ${{ github.event.pull_request.merge_commit_sha }}
+      branch: main
+      pull_number: ${{ github.event.pull_request.number }}
+      merged: true
+
+  helios:
+    name: Deploy to Helios
+    needs: ci
+    uses: ./.github/workflows/helios.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.pull_request.merge_commit_sha }}
+      target_branch: main
+      action: deploy
+
+  pages:
+    name: Deploy to GitHub Pages
+    needs: ci
+    uses: ./.github/workflows/pages.yml
+    with:
+      ref: ${{ github.event.pull_request.merge_commit_sha }}

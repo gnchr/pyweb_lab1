@@ -1,14 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {MARKER, message, reportDeployment} = require('../scripts/publish_preview.cjs');
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
-
-// Execute the metadata-only workflow's inline script as github-script does.
-const workflowText = fs.readFileSync(path.join(__dirname, '../.github/workflows/preview-link.yml'), 'utf8');
-const inline = workflowText.split('          script: |')[1].replace(/^\r?\n/, '').split(/\r?\n/).map(l => l.replace(/^ {12}/, '')).join('\n');
-const ExistingReporter = new Function('github', 'context', 'require', 'process', `return (async () => {${inline}})();`);
 
 const sha = 'a'.repeat(40);
 const pr = {number: 4, state: 'open', head: {sha, repo: {full_name: 'owner/repo'}}};
@@ -62,39 +54,4 @@ test('invalid URLs, release IDs and operations are rejected', () => {
   for (const change of [{url: 'javascript:alert(1)'}, {release: 'unsafe\nrelease'}, {operation: 'unknown'}]) {
     assert.throws(() => message({url: 'https://example.org/', release: 'v1', operation: 'deploy', runUrl: 'https://github.com/run', ...change}));
   }
-});
-
-function openedFixture(statuses, existingComments = []) {
-  const args = fixture();
-  const branch = 'feature/a';
-  args.context.payload = {pull_request: {...pr, head: {...pr.head, ref: branch}}, repository: {default_branch: 'main'}};
-  args.github.rest.repos.listDeployments = 'deployments';
-  args.github.rest.repos.listDeploymentStatuses = 'statuses';
-  args.github.paginate = async (method, params) => {
-    if (method === 'deployments') { assert.equal(params.sha, sha); return [{id: 99}]; }
-    if (method === 'statuses') return statuses;
-    return existingComments;
-  };
-  const hash = crypto.createHash('sha256').update(branch).digest('hex').slice(0, 12);
-  args.expected = `https://example.org/pyweb_lab1/previews/feature-a-${hash}/`;
-  args.process = {env: {BASE_SITE_URL: 'https://example.org/pyweb_lab1/'}};
-  return args;
-}
-test('opening PR after deploy still gets a link without a new build', async () => {
-  const args = openedFixture([]);
-  args.github.paginate = async method => method === 'deployments' ? [{id: 99}] : method === 'statuses' ? [{state: 'success', environment_url: args.expected}] : [];
-  await ExistingReporter(args.github, args.context, require, args.process);
-  assert.equal(args.calls[0][0], 'create'); assert.ok(args.calls[0][1].body.includes(args.expected));
-});
-test('pending deployment or another branch URL does not advertise a preview', async () => {
-  for (const status of [{state: 'pending', environment_url: 'https://example.org/'}, {state: 'success', environment_url: 'https://other.org/preview/'}]) {
-    const args = openedFixture([status]);
-    await ExistingReporter(args.github, args.context, require, args.process);
-    assert.equal(args.calls.length, 0);
-  }
-});
-test('PR-opened notification does not duplicate a deployment comment', async () => {
-  const args = openedFixture([], [{body: MARKER, user: {type: 'Bot'}}]);
-  args.github.paginate = async method => method === 'deployments' ? [{id: 99}] : method === 'statuses' ? [{state: 'success', environment_url: args.expected}] : [{body: MARKER, user: {type: 'Bot'}}];
-  await ExistingReporter(args.github, args.context, require, args.process); assert.equal(args.calls.length, 0);
 });

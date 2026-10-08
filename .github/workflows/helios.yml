@@ -65,7 +65,7 @@ jobs:
 
   deploy:
     needs: [resolve, build]
-    # Automatic calls have already passed the caller's CI / build.
+    # Automatic callers verified the exact commit's push CI / build via ci-gate.yml.
     # Manual operations run the same CI against the resolved target SHA first.
     if: ${{ !cancelled() && (inputs.ref != '' || needs.build.result == 'success') }}
     permissions:
